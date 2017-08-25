@@ -5,8 +5,8 @@
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
-//#include <linux/types.h>
-#include "my_linux_types.h"
+#include <linux/types.h>
+// #include "my_linux_types.h"
 #include <linux/netfilter.h>		/* for NF_ACCEPT */
 #include <pcap/pcap.h>
 #include <libnet.h>
@@ -15,7 +15,7 @@
 
 #include <libnetfilter_queue/libnetfilter_queue.h>
 
-unsigned char *data;
+unsigned char *packet;
 int len;
 
 /* returns packet id */
@@ -64,7 +64,7 @@ static u_int32_t print_pkt (struct nfq_data *tb)
 	if (ifi)
 		printf("physoutdev=%u ", ifi);
 
-	len = nfq_get_payload(tb, &data);
+	len = nfq_get_payload(tb, &packet);
 	if (len >= 0)
 		printf("payload_len=%d ", len);
 
@@ -75,7 +75,7 @@ static u_int32_t print_pkt (struct nfq_data *tb)
 
 
 
-int BSearch(char * buf[][], char * data, int len)
+int BSearch(char *buf, char *search_str, int len)
 {
 	int first = 0;
 	int last = len - 1;
@@ -84,13 +84,13 @@ int BSearch(char * buf[][], char * data, int len)
 	while (first <= last)
 	{
         mid = (first + last) / 2;
-        if (buf[mid] == data)
+        if (strcmp(buf[mid], search_str) == 0)
         {
             return mid;
         }
         else
         {
-            if (buf[mid] > data)
+            if (strcmp(buf[mid], search_str) > 0)
                 last = mid - 1;
             else
                 first = mid + 1;
@@ -110,19 +110,18 @@ int HostCheck(char *hostName)
 
 	while((fgets(tmp,30,fp)) != NULL)
 	{
-		name[cnt] = tmp;
+		memcpy(name[cnt], tmp, 30);
 		cnt++;
 	}
 
 	/* sorting the file data */
 
-	for(int i=0; i < cnt - 1; i++ )
+	for(int i=0; i < cnt - 1; i++)
 	{
-		for(int j=0; j < cnt-1-i; j++ )
+		for(int j=0; j < cnt-1-i; j++)
 		{
-			if( strcmp(name[j], name[j+1]) > 0 )
+			if(strcmp(name[j], name[j+1]) > 0)
 			{
-				tmp = {0,};
 				strcpy(tmp, name[j]);
 				strcpy(name[j], name[j+1]);
 				strcpy(name[j+1], tmp);
@@ -130,7 +129,19 @@ int HostCheck(char *hostName)
 		}
 	}
 
-	return BSearch(name, &hostName, cnt);
+	return BSearch(name, hostName, cnt);
+}
+
+char *memstr(char *srcdata, char *find, int srclen)
+{
+	char *p;
+	int findlen = strlen(find);
+	for (p = srcdata; p <= (srcdata + srclen - findlen); p++)
+	{
+		if (memcmp(p, find, findlen) == 0)
+			return p;
+	}
+	return NULL;
 }
 
 static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
@@ -140,23 +151,25 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
 	struct libnet_tcp_hdr *tcphdr;
 	unsigned short ip_proto;
 	// char buf[100000] = {0,};
-	char find_string1[] = "Host"
-	char find_string2[] = "\r\n"
-	char host_string[]; 
+	char find_string1[] = "Host";
+	char find_string2[] = "\r\n";
+	char *host_string;
+	unsigned char *begin_addr;
+	unsigned char *finish_addr; 
 	
 	u_int32_t id = print_pkt(nfa);
 	printf("entering callback\n");
 
 	int length = len;
 
-	iphdr = (struct libnet_ipv4_hdr *)(data);
+	iphdr = (struct libnet_ipv4_hdr *)(packet);
 	ip_proto = iphdr->ip_p;
 
 	if(ip_proto == IPPROTO_TCP)
 	{
-		data += iphdr->ip_hl * 4; 
-		tcphdr = (struct libnet_tcp_hdr *)(data); 
-		data += tcphdr->th_off * 4;							// pointer to Data
+		packet += iphdr->ip_hl * 4; 
+		tcphdr = (struct libnet_tcp_hdr *)(packet); 
+		packet += tcphdr->th_off * 4;							// pointer to Data
 		length = length - iphdr->ip_hl*4 - tcphdr->th_off*4; 	// data length
 
 		/*
@@ -164,21 +177,21 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
 			sprintf(buf[i], "%c", *(packet++)); 
 		*/
 
-		begin_addr = memstr(data, &find_string1, length);
+		begin_addr = memstr(packet, find_string1, length);
 
-		if(Pos == NULL)
+		if(begin_addr == NULL)
 			return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 		
 		else
 		{
 			begin_addr += 6;  // Host: ~~~
-			finish_addr = memstr(begin_addr, &find_string2, length - (begin_addr - data));
+			finish_addr = memstr(begin_addr, find_string2, length - (begin_addr - packet));
 			memcpy(host_string, begin_addr, (finish_addr - begin_addr));	
 			printf("host : %s\n", host_string);
 		}
 
 			
-		if(Hostcheck(&host_string) == -1) // no matching host
+		if(HostCheck(&host_string) == -1) // no matching host
 			return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 		else
 			return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
