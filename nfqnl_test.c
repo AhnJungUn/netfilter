@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -6,14 +5,14 @@
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <linux/types.h>
-// #include "my_linux_types.h"
 #include <linux/netfilter.h>		/* for NF_ACCEPT */
-#include <pcap/pcap.h>
 #include <libnet.h>
 #include <arpa/inet.h>
 #include <errno.h>
-
 #include <libnetfilter_queue/libnetfilter_queue.h>
+
+#define MAX_NUM 100
+#define MAX_LEN 30 
 
 unsigned char *packet;
 int len;
@@ -32,7 +31,7 @@ static u_int32_t print_pkt (struct nfq_data *tb)
 	if (ph) {
 		id = ntohl(ph->packet_id);
 		printf("hw_protocol=0x%04x hook=%u id=%u ",
-			ntohs(ph->hw_protocol), ph->hook, id);
+				ntohs(ph->hw_protocol), ph->hook, id);
 	}
 
 	hwph = nfq_get_packet_hw(tb);
@@ -75,42 +74,42 @@ static u_int32_t print_pkt (struct nfq_data *tb)
 
 
 
-int BSearch(char *buf, char *search_str, int len)
+int BSearch(char(*buf)[MAX_LEN], char *search_str, int len)
 {
 	int first = 0;
 	int last = len - 1;
 	int mid = 0;
+	int length = strlen(search_str);
 
 	while (first <= last)
 	{
-        mid = (first + last) / 2;
-        if (strcmp(buf[mid], search_str) == 0)
-        {
-            return mid;
-        }
-        else
-        {
-            if (strcmp(buf[mid], search_str) > 0)
-                last = mid - 1;
-            else
-                first = mid + 1;
-        }
-    }
-    return -1;
+		mid = (first + last) / 2;
+		if (memcmp(buf[mid], search_str, length) == 0)
+		{
+			return mid;
+		}
+		else
+		{
+			if (memcmp(buf[mid], search_str, length) > 0)
+				last = mid - 1;
+			else
+				first = mid + 1;
+		}
+	}
+	return -1;
 }
 
 int HostCheck(char *hostName)
 {
 	FILE *fp;
-	char name[100][30];
-	char tmp[30];
+	char name[MAX_NUM][MAX_LEN];
+	char tmp[MAX_LEN];
 	int cnt = 0;
 
 	fp = fopen("./weblist.txt","r");
 
-	while((fgets(tmp,30,fp)) != NULL)
+	while((fgets(name[cnt],MAX_LEN,fp)) != NULL)
 	{
-		memcpy(name[cnt], tmp, 30);
 		cnt++;
 	}
 
@@ -145,70 +144,58 @@ char *memstr(char *srcdata, char *find, int srclen)
 }
 
 static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
-	      struct nfq_data *nfa, void *data)
+		struct nfq_data *nfa, void *data)
 {
 	struct libnet_ipv4_hdr *iphdr;
 	struct libnet_tcp_hdr *tcphdr;
 	unsigned short ip_proto;
-	// char buf[100000] = {0,};
 	char find_string1[] = "Host";
 	char find_string2[] = "\r\n";
-	char *host_string;
+	char host_string[MAX_LEN];
 	unsigned char *begin_addr;
 	unsigned char *finish_addr; 
-	
-	u_int32_t id = print_pkt(nfa);
-	printf("entering callback\n");
+	while(1)
+	{	
+		u_int32_t id = print_pkt(nfa);
+		printf("entering callback\n");
 
-	int length = len;
+		int length = len;
 
-	iphdr = (struct libnet_ipv4_hdr *)(packet);
-	ip_proto = iphdr->ip_p;
+		iphdr = (struct libnet_ipv4_hdr *)(packet);
+		ip_proto = iphdr->ip_p;
 
-	if(ip_proto == IPPROTO_TCP)
-	{
-		packet += iphdr->ip_hl * 4; 
-		tcphdr = (struct libnet_tcp_hdr *)(packet); 
-		packet += tcphdr->th_off * 4;							// pointer to Data
-		length = length - iphdr->ip_hl*4 - tcphdr->th_off*4; 	// data length
-
-		/*
-		for(int i = 0; i < length; i++)
-			sprintf(buf[i], "%c", *(packet++)); 
-		*/
-
-		begin_addr = memstr(packet, find_string1, length);
-
-		if(begin_addr == NULL)
-			return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
-		
-		else
+		if(ip_proto == IPPROTO_TCP)
 		{
-			begin_addr += 6;  // Host: ~~~
-			finish_addr = memstr(begin_addr, find_string2, length - (begin_addr - packet));
-			memcpy(host_string, begin_addr, (finish_addr - begin_addr));	
-			printf("host : %s\n", host_string);
+			packet += iphdr->ip_hl * 4; 
+			tcphdr = (struct libnet_tcp_hdr *)(packet); 
+			packet += tcphdr->th_off * 4;				// pointer to Data
+			length = length - iphdr->ip_hl*4 - tcphdr->th_off*4; 	// data length
+
+			begin_addr = memstr(packet, find_string1, length);
+
+			if(begin_addr == NULL)
+				return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+
+			else
+			{
+				memset(host_string, 0, 30);
+				begin_addr += 6;  
+				finish_addr = memstr(begin_addr, find_string2, length - (begin_addr - packet));
+				memcpy(host_string, begin_addr, (finish_addr - begin_addr));	
+				printf("host : %s\n", host_string);
+			}
+
+
+			if(HostCheck(host_string) == -1) 
+				return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+			else
+				return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
+
 		}
 
-			
-		if(HostCheck(&host_string) == -1) // no matching host
-			return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 		else
-			return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
-		//48 6f 73 74  ~~ 0d0a 
-
+			return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 	}
-
-	else
-		return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
-	
-
-	
-
-
-	// call get-payload function. and check the HTTP data
-
-	
 }
 
 int main(int argc, char **argv)
